@@ -1,0 +1,122 @@
+name: Статус сервисов
+
+on:
+  push:
+    paths:
+      - .upptimerc.yml
+      - .github/workflows/status.yml
+      - .github/scripts/check_public_endpoints.py
+      - assets/**
+  schedule:
+    - cron: "2-57/5 * * * *"
+    - cron: "59 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Публичные проверки frontend и backend
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: python3 .github/scripts/check_public_endpoints.py
+
+  monitor:
+    name: Обновление статуса и GitHub Pages
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    concurrency:
+      group: production-status
+      cancel-in-progress: false
+    steps:
+      - name: Проверить конфигурацию мониторинга
+        id: config
+        env:
+          APP_CLIENT_ID: ${{ vars.GH_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          SDP_PROBE_URL: ${{ secrets.SDP_PROBE_URL }}
+          SDP_PROBE_TOKEN: ${{ secrets.SDP_PROBE_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from urllib.parse import urlsplit
+
+          required = ("APP_CLIENT_ID", "APP_PRIVATE_KEY", "SDP_PROBE_URL", "SDP_PROBE_TOKEN")
+          if not all(os.environ.get(key, "").strip() for key in required):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write("Мониторинг ожидает настройки GitHub App и ServiceDesk.\n")
+              raise SystemExit(0)
+
+          try:
+              url = urlsplit(os.environ["SDP_PROBE_URL"])
+          except ValueError:
+              raise SystemExit("Некорректный URL служебной заявки ServiceDesk.") from None
+          if (url.scheme != "https" or not url.hostname or url.username is not None
+              or url.password is not None or url.query or url.fragment
+              or not re.search(r"/api/v3/requests/[0-9]+$", url.path)):
+              raise SystemExit("Для ServiceDesk требуется HTTPS URL заявки без параметров и учётных данных.")
+          print(f"::add-mask::{url.hostname}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as outputs:
+              outputs.write("ready=true\n")
+          PY
+      - name: Получить токен установки GitHub App
+        if: steps.config.outputs.ready == 'true'
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v6
+        if: steps.config.outputs.ready == 'true'
+        with:
+          token: ${{ steps.app.outputs.token }}
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Проверить сервисы
+        if: steps.config.outputs.ready == 'true'
+        uses: upptime/uptime-monitor@v1.46.5
+        env:
+          GH_PAT: ${{ steps.app.outputs.token }}
+          SECRETS_CONTEXT: '{"SDP_PROBE_URL":${{ toJSON(secrets.SDP_PROBE_URL) }},"SDP_PROBE_TOKEN":${{ toJSON(secrets.SDP_PROBE_TOKEN) }}}'
+        with:
+          command: ${{ (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *') && 'response-time' || 'update' }}
+      - name: Подготовить Node.js для графиков
+        if: steps.config.outputs.ready == 'true' && (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *')
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Обновить сводку статусов
+        if: steps.config.outputs.ready == 'true' && (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *')
+        uses: upptime/uptime-monitor@v1.46.5
+        env:
+          GH_PAT: ${{ steps.app.outputs.token }}
+        with:
+          command: summary
+      - name: Построить графики времени ответа
+        if: steps.config.outputs.ready == 'true' && (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *')
+        uses: upptime/uptime-monitor@v1.46.5
+        env:
+          GH_PAT: ${{ steps.app.outputs.token }}
+        with:
+          command: graphs
+      - name: Собрать страницу статуса
+        if: steps.config.outputs.ready == 'true' && (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *')
+        uses: upptime/uptime-monitor@v1.46.5
+        env:
+          GH_PAT: ${{ steps.app.outputs.token }}
+        with:
+          command: site
+      - name: Опубликовать страницу в gh-pages
+        if: steps.config.outputs.ready == 'true' && (github.event_name != 'schedule' || github.event.schedule == '59 1 * * *')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ steps.app.outputs.token }}
+          publish_dir: site/status-page/__sapper__/export/
+          publish_branch: gh-pages
