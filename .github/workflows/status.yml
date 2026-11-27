@@ -8,7 +8,7 @@ on:
       - .github/scripts/check_public_endpoints.py
       - assets/**
   schedule:
-    - cron: "2-57/5 * * * *"
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
     - cron: "59 1 * * *"
   workflow_dispatch:
 

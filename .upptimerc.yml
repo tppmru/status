@@ -47,7 +47,7 @@ status-website:
   logoUrl: https://tppmru.github.io/status/status-icon.svg
   faviconSvg: https://tppmru.github.io/status/status-icon.svg
   introTitle: Статус сервисов Технополиса
-  introMessage: GitHub Actions проверяет доступность сервисов каждые пять минут. Проверки по расписанию могут запускаться с задержкой.
+  introMessage: Проверки доступности запланированы каждые пять минут. GitHub Actions может задерживать или пропускать плановые запуски.
   navbar:
     - title: Статус
       href: /
